@@ -1,5 +1,6 @@
+# -*- coding: utf-8 -*-
 # This file is part of beets.
-# Copyright 2015, Adrian Sampson.
+# Copyright 2016, Adrian Sampson.
 #
 # Permission is hereby granted, free of charge, to any person obtaining
 # a copy of this software and associated documentation files (the
@@ -14,10 +15,7 @@
 
 """Miscellaneous utility functions."""
 
-from __future__ import (division, absolute_import, print_function,
-                        unicode_literals)
-import ctypes
-
+from __future__ import division, absolute_import, print_function
 import os
 import sys
 import re
@@ -58,10 +56,10 @@ class HumanReadableException(Exception):
     def _gerund(self):
         """Generate a (likely) gerund form of the English verb.
         """
-        if ' ' in self.verb:
+        if u' ' in self.verb:
             return self.verb
-        gerund = self.verb[:-1] if self.verb.endswith('e') else self.verb
-        gerund += 'ing'
+        gerund = self.verb[:-1] if self.verb.endswith(u'e') else self.verb
+        gerund += u'ing'
         return gerund
 
     def _reasonstr(self):
@@ -416,7 +414,7 @@ def copy(path, dest, replace=False):
     path = syspath(path)
     dest = syspath(dest)
     if not replace and os.path.exists(dest):
-        raise FilesystemError('file exists', 'copy', (path, dest))
+        raise FilesystemError(u'file exists', 'copy', (path, dest))
     try:
         shutil.copyfile(path, dest)
     except (OSError, IOError) as exc:
@@ -437,7 +435,7 @@ def move(path, dest, replace=False):
     path = syspath(path)
     dest = syspath(dest)
     if os.path.exists(dest) and not replace:
-        raise FilesystemError('file exists', 'rename', (path, dest),
+        raise FilesystemError(u'file exists', 'rename', (path, dest),
                               traceback.format_exc())
 
     # First, try renaming the file.
@@ -463,13 +461,13 @@ def link(path, dest, replace=False):
     path = syspath(path)
     dest = syspath(dest)
     if os.path.exists(dest) and not replace:
-        raise FilesystemError('file exists', 'rename', (path, dest),
+        raise FilesystemError(u'file exists', 'rename', (path, dest),
                               traceback.format_exc())
     try:
         os.symlink(path, dest)
     except OSError:
-        raise FilesystemError('Operating system does not support symbolic '
-                              'links.', 'link', (path, dest),
+        raise FilesystemError(u'Operating system does not support symbolic '
+                              u'links.', 'link', (path, dest),
                               traceback.format_exc())
 
 
@@ -620,7 +618,7 @@ def legalize_path(path, replacements, length, extension, fragment):
 
 def str2bool(value):
     """Returns a boolean reflecting a human-entered string."""
-    return value.lower() in ('yes', '1', 'true', 't', 'y')
+    return value.lower() in (u'yes', u'1', u'true', u't', u'y')
 
 
 def as_string(value):
@@ -644,7 +642,7 @@ def plurality(objs):
     """
     c = Counter(objs)
     if not c:
-        raise ValueError('sequence must be non-empty')
+        raise ValueError(u'sequence must be non-empty')
     return c.most_common(1)[0]
 
 
@@ -701,6 +699,7 @@ def command_output(cmd, shell=False):
         raise subprocess.CalledProcessError(
             returncode=proc.returncode,
             cmd=b' '.join(cmd),
+            output=stdout + stderr,
         )
     return stdout
 
@@ -736,31 +735,59 @@ def open_anything():
     return base_cmd
 
 
-def interactive_open(targets, command=None):
-    """Open the files in `targets` by `exec`ing a new command. (The new
-    program takes over, and Python execution ends: this does not fork a
-    subprocess.)
+def editor_command():
+    """Get a command for opening a text file.
 
-    If `command` is provided, use it. Otherwise, use an OS-specific
-    command (from `open_anything`) to open the file.
+    Use the `EDITOR` environment variable by default. If it is not
+    present, fall back to `open_anything()`, the platform-specific tool
+    for opening files in general.
+    """
+    editor = os.environ.get('EDITOR')
+    if editor:
+        return editor
+    return open_anything()
+
+
+def shlex_split(s):
+    """Split a Unicode or bytes string according to shell lexing rules.
+
+    Raise `ValueError` if the string is not a well-formed shell string.
+    This is a workaround for a bug in some versions of Python.
+    """
+    if isinstance(s, bytes):
+        # Shlex works fine.
+        return shlex.split(s)
+
+    elif isinstance(s, unicode):
+        # Work around a Python bug.
+        # http://bugs.python.org/issue6988
+        bs = s.encode('utf8')
+        return [c.decode('utf8') for c in shlex.split(bs)]
+
+    else:
+        raise TypeError(u'shlex_split called with non-string')
+
+
+def interactive_open(targets, command):
+    """Open the files in `targets` by `exec`ing a new `command`, given
+    as a Unicode string. (The new program takes over, and Python
+    execution ends: this does not fork a subprocess.)
 
     Can raise `OSError`.
     """
-    if command:
-        command = command.encode('utf8')
-        try:
-            command = [c.decode('utf8')
-                       for c in shlex.split(command)]
-        except ValueError:  # Malformed shell tokens.
-            command = [command]
-        command.insert(0, command[0])  # for argv[0]
-    else:
-        base_cmd = open_anything()
-        command = [base_cmd, base_cmd]
+    assert command
 
-    command += targets
+    # Split the command string into its arguments.
+    try:
+        args = shlex_split(command)
+    except ValueError:  # Malformed shell tokens.
+        args = [command]
 
-    return os.execlp(*command)
+    args.insert(0, args[0])  # for argv[0]
+
+    args += targets
+
+    return os.execlp(*args)
 
 
 def _windows_long_path_name(short_path):
@@ -769,9 +796,12 @@ def _windows_long_path_name(short_path):
     """
     if not isinstance(short_path, unicode):
         short_path = unicode(short_path)
+
+    import ctypes
     buf = ctypes.create_unicode_buffer(260)
     get_long_path_name_w = ctypes.windll.kernel32.GetLongPathNameW
     return_value = get_long_path_name_w(short_path, buf, 260)
+
     if return_value == 0 or return_value > 260:
         # An error occurred
         return short_path
@@ -815,3 +845,16 @@ def case_sensitive(path):
     lower = _windows_long_path_name(path.lower())
     upper = _windows_long_path_name(path.upper())
     return lower != upper
+
+
+def raw_seconds_short(string):
+    """Formats a human-readable M:SS string as a float (number of seconds).
+
+    Raises ValueError if the conversion cannot take place due to `string` not
+    being in the right format.
+    """
+    match = re.match(r'^(\d+):([0-5]\d)$', string)
+    if not match:
+        raise ValueError(u'String not in M:SS format')
+    minutes, seconds = map(int, match.groups())
+    return float(minutes * 60 + seconds)

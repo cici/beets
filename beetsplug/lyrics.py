@@ -1,5 +1,6 @@
+# -*- coding: utf-8 -*-
 # This file is part of beets.
-# Copyright 2015, Adrian Sampson.
+# Copyright 2016, Adrian Sampson.
 #
 # Permission is hereby granted, free of charge, to any person obtaining
 # a copy of this software and associated documentation files (the
@@ -15,8 +16,7 @@
 """Fetches, embeds, and displays lyrics.
 """
 
-from __future__ import (division, absolute_import, print_function,
-                        unicode_literals)
+from __future__ import division, absolute_import, print_function
 
 import re
 import requests
@@ -29,7 +29,7 @@ import warnings
 from HTMLParser import HTMLParseError
 
 from beets import plugins
-from beets import config, ui
+from beets import ui
 
 
 DIV_RE = re.compile(r'<(/?)div>?', re.I)
@@ -106,7 +106,7 @@ def extract_text_in(html, starttag):
             parts.append(html[pos:match.start()])
             break
     else:
-        print('no closing tag found!')
+        print(u'no closing tag found!')
         return
     return u''.join(parts)
 
@@ -200,18 +200,28 @@ class Backend(object):
 
 
 class SymbolsReplaced(Backend):
+    REPLACEMENTS = {
+        r'\s+': '_',
+        '<': 'Less_Than',
+        '>': 'Greater_Than',
+        '#': 'Number_',
+        r'[\[\{]': '(',
+        r'[\[\{]': ')'
+    }
+
     @classmethod
     def _encode(cls, s):
-        s = re.sub(r'\s+', '_', s)
-        s = s.replace("<", "Less_Than")
-        s = s.replace(">", "Greater_Than")
-        s = s.replace("#", "Number_")
-        s = re.sub(r'[\[\{]', '(', s)
-        s = re.sub(r'[\]\}]', ')', s)
+        for old, new in cls.REPLACEMENTS.iteritems():
+            s = re.sub(old, new, s)
+
         return super(SymbolsReplaced, cls)._encode(s)
 
 
 class MusiXmatch(SymbolsReplaced):
+    REPLACEMENTS = dict(SymbolsReplaced.REPLACEMENTS, **{
+        r'\s+': '-'
+    })
+
     URL_PATTERN = 'https://www.musixmatch.com/lyrics/%s/%s'
 
     def fetch(self, artist, title):
@@ -220,7 +230,7 @@ class MusiXmatch(SymbolsReplaced):
         if not html:
             return
         lyrics = extract_text_between(html,
-                                      '"lyrics_body":', '"lyrics_language":')
+                                      '"body":', '"language":')
         return lyrics.strip(',"').replace('\\n', '\n')
 
 
@@ -236,25 +246,45 @@ class Genius(Backend):
         url = u'https://api.genius.com/search?q=%s' \
             % (urllib.quote(query.encode('utf8')))
 
-        data = requests.get(
-            url,
-            headers=self.headers,
-            allow_redirects=True
-        ).content
+        self._log.debug(u'genius: requesting search {}', url)
+        try:
+            req = requests.get(
+                url,
+                headers=self.headers,
+                allow_redirects=True
+            )
+            req.raise_for_status()
+        except requests.RequestException as exc:
+            self._log.debug(u'genius: request error: {}', exc)
+            return None
 
-        return json.loads(data)
+        try:
+            return req.json()
+        except ValueError:
+            self._log.debug(u'genius: invalid response: {}', req.text)
+            return None
 
     def get_lyrics(self, link):
         url = u'http://genius-api.com/api/lyricsInfo'
 
-        data = requests.post(
-            url,
-            data={'link': link},
-            headers=self.headers,
-            allow_redirects=True
-        ).content
+        self._log.debug(u'genius: requesting lyrics for link {}', link)
+        try:
+            req = requests.post(
+                url,
+                data={'link': link},
+                headers=self.headers,
+                allow_redirects=True
+            )
+            req.raise_for_status()
+        except requests.RequestException as exc:
+            self._log.debug(u'genius: request error: {}', exc)
+            return None
 
-        return json.loads(data)
+        try:
+            return req.json()
+        except ValueError:
+            self._log.debug(u'genius: invalid response: {}', req.text)
+            return None
 
     def build_lyric_string(self, lyrics):
         if 'lyrics' not in lyrics:
@@ -273,6 +303,8 @@ class Genius(Backend):
 
     def fetch(self, artist, title):
         search_data = self.search_genius(artist, title)
+        if not search_data:
+            return
 
         if not search_data['meta']['status'] == 200:
             return
@@ -283,6 +315,8 @@ class Genius(Backend):
 
             record_url = records[0]['result']['url']
             lyric_data = self.get_lyrics(record_url)
+            if not lyric_data:
+                return
             lyrics = self.build_lyric_string(lyric_data)
 
             return lyrics
@@ -297,7 +331,12 @@ class LyricsWiki(SymbolsReplaced):
         html = self.fetch_url(url)
         if not html:
             return
-        lyrics = extract_text_in(html, u"<div class='lyricbox'>")
+
+        # Get the HTML fragment inside the appropriate HTML element and then
+        # extract the text from it.
+        html_frag = extract_text_in(unescape(html), u"<div class='lyricbox'>")
+        lyrics = scrape_lyrics_from_html(html_frag)
+
         if lyrics and 'Unfortunately, we are not licensed' not in lyrics:
             return lyrics
 
@@ -395,8 +434,13 @@ def scrape_lyrics_from_html(html):
                              parse_only=SoupStrainer(text=is_text_notcode))
     except HTMLParseError:
         return None
-    soup = sorted(soup.stripped_strings, key=len)[-1]
-    return soup
+
+    # Get the longest text element (if any).
+    strings = sorted(soup.stripped_strings, key=len, reverse=True)
+    if strings:
+        return strings[0]
+    else:
+        return None
 
 
 class Google(Backend):
@@ -453,28 +497,32 @@ class Google(Backend):
     BY_TRANS = ['by', 'par', 'de', 'von']
     LYRICS_TRANS = ['lyrics', 'paroles', 'letras', 'liedtexte']
 
-    def is_page_candidate(self, urlLink, urlTitle, title, artist):
+    def is_page_candidate(self, url_link, url_title, title, artist):
         """Return True if the URL title makes it a good candidate to be a
         page that contains lyrics of title by artist.
         """
         title = self.slugify(title.lower())
         artist = self.slugify(artist.lower())
         sitename = re.search(u"//([^/]+)/.*",
-                             self.slugify(urlLink.lower())).group(1)
-        urlTitle = self.slugify(urlTitle.lower())
+                             self.slugify(url_link.lower())).group(1)
+        url_title = self.slugify(url_title.lower())
+
         # Check if URL title contains song title (exact match)
-        if urlTitle.find(title) != -1:
+        if url_title.find(title) != -1:
             return True
+
         # or try extracting song title from URL title and check if
         # they are close enough
         tokens = [by + '_' + artist for by in self.BY_TRANS] + \
                  [artist, sitename, sitename.replace('www.', '')] + \
             self.LYRICS_TRANS
-        songTitle = re.sub(u'(%s)' % u'|'.join(tokens), u'', urlTitle)
-        songTitle = songTitle.strip('_|')
-        typoRatio = .9
-        ratio = difflib.SequenceMatcher(None, songTitle, title).ratio()
-        return ratio >= typoRatio
+        tokens = [re.escape(t) for t in tokens]
+        song_title = re.sub(u'(%s)' % u'|'.join(tokens), u'', url_title)
+
+        song_title = song_title.strip('_|')
+        typo_ratio = .9
+        ratio = difflib.SequenceMatcher(None, song_title, title).ratio()
+        return ratio >= typo_ratio
 
     def fetch(self, artist, title):
         query = u"%s %s" % (artist, title)
@@ -491,12 +539,12 @@ class Google(Backend):
 
         if 'items' in data.keys():
             for item in data['items']:
-                urlLink = item['link']
-                urlTitle = item.get('title', u'')
-                if not self.is_page_candidate(urlLink, urlTitle,
+                url_link = item['link']
+                url_title = item.get('title', u'')
+                if not self.is_page_candidate(url_link, url_title,
                                               title, artist):
                     continue
-                html = self.fetch_url(urlLink)
+                html = self.fetch_url(url_link)
                 lyrics = scrape_lyrics_from_html(html)
                 if not lyrics:
                     continue
@@ -508,7 +556,7 @@ class Google(Backend):
 
 
 class LyricsPlugin(plugins.BeetsPlugin):
-    SOURCES = ['google', 'lyricwiki', 'lyrics.com', 'musixmatch', 'genius']
+    SOURCES = ['google', 'lyricwiki', 'lyrics.com', 'musixmatch']
     SOURCE_BACKENDS = {
         'google': Google,
         'lyricwiki': LyricsWiki,
@@ -547,17 +595,21 @@ class LyricsPlugin(plugins.BeetsPlugin):
 
     def commands(self):
         cmd = ui.Subcommand('lyrics', help='fetch song lyrics')
-        cmd.parser.add_option('-p', '--print', dest='printlyr',
-                              action='store_true', default=False,
-                              help='print lyrics to console')
-        cmd.parser.add_option('-f', '--force', dest='force_refetch',
-                              action='store_true', default=False,
-                              help='always re-download lyrics')
+        cmd.parser.add_option(
+            u'-p', u'--print', dest='printlyr',
+            action='store_true', default=False,
+            help=u'print lyrics to console',
+        )
+        cmd.parser.add_option(
+            u'-f', u'--force', dest='force_refetch',
+            action='store_true', default=False,
+            help=u'always re-download lyrics',
+        )
 
         def func(lib, opts, args):
             # The "write to files" option corresponds to the
             # import_write config value.
-            write = config['import']['write'].get(bool)
+            write = ui.should_write()
             for item in lib.items(ui.decargs(args)):
                 self.fetch_item_lyrics(
                     lib, item, write,

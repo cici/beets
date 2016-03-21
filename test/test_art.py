@@ -1,5 +1,6 @@
+# -*- coding: utf-8 -*-
 # This file is part of beets.
-# Copyright 2015, Adrian Sampson.
+# Copyright 2016, Adrian Sampson.
 #
 # Permission is hereby granted, free of charge, to any person obtaining
 # a copy of this software and associated documentation files (the
@@ -14,13 +15,13 @@
 
 """Tests for the album art fetchers."""
 
-from __future__ import (division, absolute_import, print_function,
-                        unicode_literals)
+from __future__ import division, absolute_import, print_function
 
 import os
 import shutil
 
 import responses
+from mock import patch
 
 from test import _common
 from test._common import unittest
@@ -30,6 +31,7 @@ from beets import library
 from beets import importer
 from beets import config
 from beets import logging
+from beets import util
 from beets.util.artresizer import ArtResizer, WEBPROXY
 
 
@@ -62,13 +64,13 @@ class FetchImageTest(UseThePlugin):
         self.assertNotEqual(artpath, None)
 
 
-class FSArtTest(_common.TestCase):
+class FSArtTest(UseThePlugin):
     def setUp(self):
         super(FSArtTest, self).setUp()
         self.dpath = os.path.join(self.temp_dir, 'arttest')
         os.mkdir(self.dpath)
 
-        self.source = fetchart.FileSystem(logger)
+        self.source = fetchart.FileSystem(logger, self.plugin.config)
 
     def test_finds_jpg_in_directory(self):
         _common.touch(os.path.join(self.dpath, 'a.jpg'))
@@ -187,13 +189,13 @@ class CombinedTest(UseThePlugin):
         self.assertEqual(len(responses.calls), 0)
 
 
-class AAOTest(_common.TestCase):
+class AAOTest(UseThePlugin):
     ASIN = 'xxxx'
     AAO_URL = 'http://www.albumart.org/index_detail.php?asin={0}'.format(ASIN)
 
     def setUp(self):
         super(AAOTest, self).setUp()
-        self.source = fetchart.AlbumArtOrg(logger)
+        self.source = fetchart.AlbumArtOrg(logger, self.plugin.config)
 
     @responses.activate
     def run(self, *args, **kwargs):
@@ -206,10 +208,10 @@ class AAOTest(_common.TestCase):
     def test_aao_scraper_finds_image(self):
         body = b"""
         <br />
-        <a href="TARGET_URL" title="View larger image"
-           class="thickbox" style="color: #7E9DA2; text-decoration:none;">
-        <img src="http://www.albumart.org/images/zoom-icon.jpg"
-             alt="View larger image" width="17" height="15"  border="0"/></a>
+        <a href=\"TARGET_URL\" title=\"View larger image\"
+           class=\"thickbox\" style=\"color: #7E9DA2; text-decoration:none;\">
+        <img src=\"http://www.albumart.org/images/zoom-icon.jpg\"
+       alt=\"View larger image\" width=\"17\" height=\"15\"  border=\"0\"/></a>
         """
         self.mock_response(self.AAO_URL, body)
         album = _common.Bag(asin=self.ASIN)
@@ -223,13 +225,10 @@ class AAOTest(_common.TestCase):
         self.assertEqual(list(res), [])
 
 
-class GoogleImageTest(_common.TestCase):
-
-    _google_url = 'https://ajax.googleapis.com/ajax/services/search/images'
-
+class GoogleImageTest(UseThePlugin):
     def setUp(self):
         super(GoogleImageTest, self).setUp()
-        self.source = fetchart.GoogleImages(logger)
+        self.source = fetchart.GoogleImages(logger, self.plugin.config)
 
     @responses.activate
     def run(self, *args, **kwargs):
@@ -241,20 +240,27 @@ class GoogleImageTest(_common.TestCase):
 
     def test_google_art_finds_image(self):
         album = _common.Bag(albumartist="some artist", album="some album")
-        json = b"""{"responseData": {"results":
-            [{"unescapedUrl": "url_to_the_image"}]}}"""
-        self.mock_response(self._google_url, json)
+        json = b'{"items": [{"link": "url_to_the_image"}]}'
+        self.mock_response(fetchart.GoogleImages.URL, json)
         result_url = self.source.get(album)
         self.assertEqual(list(result_url)[0], 'url_to_the_image')
 
-    def test_google_art_dont_finds_image(self):
+    def test_google_art_returns_no_result_when_error_received(self):
+        album = _common.Bag(albumartist="some artist", album="some album")
+        json = b'{"error": {"errors": [{"reason": "some reason"}]}}'
+        self.mock_response(fetchart.GoogleImages.URL, json)
+        result_url = self.source.get(album)
+        self.assertEqual(list(result_url), [])
+
+    def test_google_art_returns_no_result_with_malformed_response(self):
         album = _common.Bag(albumartist="some artist", album="some album")
         json = b"""bla blup"""
-        self.mock_response(self._google_url, json)
+        self.mock_response(fetchart.GoogleImages.URL, json)
         result_url = self.source.get(album)
         self.assertEqual(list(result_url), [])
 
 
+@_common.slow_test()
 class ArtImporterTest(UseThePlugin):
     def setUp(self):
         super(ArtImporterTest, self).setUp()
@@ -291,10 +297,10 @@ class ArtImporterTest(UseThePlugin):
         self.task.is_album = True
         self.task.album = self.album
         info = AlbumInfo(
-            album='some album',
-            album_id='albumid',
-            artist='some artist',
-            artist_id='artistid',
+            album=u'some album',
+            album_id=u'albumid',
+            artist=u'some artist',
+            artist_id=u'artistid',
             tracks=[],
         )
         self.task.set_choice(AlbumMatch(0, info, {}, set(), set()))
@@ -357,6 +363,18 @@ class ArtImporterTest(UseThePlugin):
         self.afa_response = artdest
         self._fetch_art(True)
 
+    def test_fetch_art_if_imported_file_deleted(self):
+        # See #1126. Test the following scenario:
+        #   - Album art imported, `album.artpath` set.
+        #   - Imported album art file subsequently deleted (by user or other
+        #     program).
+        # `fetchart` should import album art again instead of printing the
+        # message "<album> has album art".
+        self._fetch_art(True)
+        util.remove(self.album.artpath)
+        self.plugin.batch_fetch_art(self.lib, self.lib.albums(), force=False)
+        self.assertExists(self.album.artpath)
+
 
 class ArtForAlbumTest(UseThePlugin):
     """ Tests that fetchart.art_for_album respects the size
@@ -409,12 +427,18 @@ class ArtForAlbumTest(UseThePlugin):
         else:
             self.assertIsNone(local_artpath)
 
+    def _assertImageResized(self, image_file, should_resize):
+        self.image_file = image_file
+        with patch.object(ArtResizer.shared, 'resize') as mock_resize:
+            self.plugin.art_for_album(None, [''], True)
+            self.assertEqual(mock_resize.called, should_resize)
+
     def _require_backend(self):
         """Skip the test if the art resizer doesn't have ImageMagick or
         PIL (so comparisons and measurements are unavailable).
         """
         if ArtResizer.shared.method[0] == WEBPROXY:
-            self.skipTest("ArtResizer has no local imaging backend available")
+            self.skipTest(u"ArtResizer has no local imaging backend available")
 
     def test_respect_minwidth(self):
         self._require_backend()
@@ -431,6 +455,12 @@ class ArtForAlbumTest(UseThePlugin):
     def test_respect_enforce_ratio_no(self):
         self.plugin.enforce_ratio = False
         self._assertImageIsValidArt(self.IMG_500x490, True)
+
+    def test_resize_if_necessary(self):
+        self._require_backend()
+        self.plugin.maxwidth = 300
+        self._assertImageResized(self.IMG_225x225, False)
+        self._assertImageResized(self.IMG_348x348, True)
 
 
 def suite():

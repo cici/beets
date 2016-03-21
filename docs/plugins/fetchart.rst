@@ -52,11 +52,17 @@ file. The available options are:
   Default: ``coverart itunes amazon albumart``, i.e., everything but
   ``wikipedia`` and ``google``. Enable those two sources for more matches at
   the cost of some speed.
+- **google_key**: Your Google API key (to enable the Google Custom Search
+  backend).
+  Default: None.
+- **google_engine**: The custom search engine to use.
+  Default: The `beets custom search engine`_, which searches the entire web.
 
 Note: ``minwidth`` and ``enforce_ratio`` options require either `ImageMagick`_
-or `PIL`_.
+or `Pillow`_.
 
-.. _PIL: http://www.pythonware.com/products/pil/
+.. _beets custom search engine: https://cse.google.com.au:443/cse/publicurl?cx=001442825323518660753:hrh5ch1gjzm
+.. _Pillow: https://github.com/python-pillow/Pillow
 .. _ImageMagick: http://www.imagemagick.org/
 
 Here's an example that makes plugin select only images that contain *front* or
@@ -87,27 +93,28 @@ be processed; otherwise, the command processes every album in your library.
 Image Resizing
 --------------
 
-Beets can resize images using `PIL`_, `ImageMagick`_, or a server-side resizing
-proxy. If either PIL or ImageMagick is installed, beets will use those;
+Beets can resize images using `Pillow`_, `ImageMagick`_, or a server-side resizing
+proxy. If either Pillow or ImageMagick is installed, beets will use those;
 otherwise, it falls back to the resizing proxy. If the resizing proxy is used,
 no resizing is performed for album art found on the filesystem---only downloaded
 art is resized. Server-side resizing can also be slower than local resizing, so
 consider installing one of the two backends for better performance.
 
-When using ImageMagic, beets looks for the ``convert`` executable in your path.
+When using ImageMagick, beets looks for the ``convert`` executable in your path.
 On some versions of Windows, the program can be shadowed by a system-provided
 ``convert.exe``. On these systems, you may need to modify your ``%PATH%``
-environment variable so that ImageMagick comes first or use PIL instead.
+environment variable so that ImageMagick comes first or use Pillow instead.
 
-.. _PIL: http://www.pythonware.com/products/pil/
+.. _Pillow: https://github.com/python-pillow/Pillow
 .. _ImageMagick: http://www.imagemagick.org/
 
 Album Art Sources
 -----------------
 
 By default, this plugin searches for art in the local filesystem as well as on
-the Cover Art Archive, the iTunes Store, Amazon, AlbumArt.org,
-and Google Image Search, and Wikipedia, in that order. You can reorder the sources or remove
+the Cover Art Archive, the iTunes Store, Amazon, and AlbumArt.org, in that
+order.
+You can reorder the sources or remove
 some to speed up the process using the ``sources`` configuration option.
 
 When looking for local album art, beets checks for image files located in the
@@ -126,23 +133,34 @@ iTunes Store
 To use the iTunes Store as an art source, install the `python-itunes`_
 library. You can do this using `pip`_, like so::
 
-    $ pip install python-itunes
+    $ pip install https://github.com/ocelma/python-itunes/archive/master.zip
 
+(There's currently `a problem`_ that prevents a plain ``pip install
+python-itunes`` from working.)
 Once the library is installed, the plugin will use it to search automatically.
 
+.. _a problem: https://github.com/ocelma/python-itunes/issues/9
 .. _python-itunes: https://github.com/ocelma/python-itunes
 .. _pip: http://pip.openplans.org/
 
-Google Image Search
-'''''''''''''''''''
+Google custom search
+''''''''''''''''''''
 
-You can optionally search for cover art on `Google Images`_. This option uses
-the first hit for a search query consisting of the artist and album name. It
-is therefore approximate: "incorrect" image matches are possible (although
-unlikely).
+To use the google image search backend you need to
+`register for a Google API key`_. Set the ``google_key`` configuration
+option to your key, then add ``google`` to the list of sources in your
+configuration.
 
-.. _Google Images: http://images.google.com/
+.. _register for a Google API key: https://code.google.com/apis/console.
 
+Optionally, you can `define a custom search engine`_. Get your search engine's
+token and use it for your ``google_engine`` configuration option. The
+default engine searches the entire web for cover art.
+
+.. _define a custom search engine: http://www.google.com/cse/all
+
+Note that the Google custom search API is limited to 100 queries per day.
+After that, the fetchart plugin will fall back on other declared data sources.
 
 Embedding Album Art
 -------------------
